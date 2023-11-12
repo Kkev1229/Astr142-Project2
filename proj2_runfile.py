@@ -74,7 +74,7 @@ def load_hudf_z_vizier(catalog_id, zcol, mag_limit=None, limit_filter='F775W'):
     except: raise TypeError('limit_filter must be a string with the magnitude band to constrain rows')
     if mag_limit is not None:
         try:
-            assert isinstance(mag_limit, float)
+            mag_limit = float(mag_limit)
         except: raise TypeError('mag_limit must be a float with the magnitude to constrain rows')
 
 
@@ -103,18 +103,15 @@ def load_hudf_z_vizier(catalog_id, zcol, mag_limit=None, limit_filter='F775W'):
     args = {'catalog':catalog, 'z':redshifts, 'sky':coords}
     return args
 
-
 if __name__=='__main__':
-    test = load_hudf_z_vizier(catalog_id='J/AJ/150/31/table5', zcol='zph1')
-    print(test)
-    exit()
-    ### HUDF data
+    ### Load HUDF data
     extent = [4000, 6000, 4000, 6000]
 
-    hudf_data, hudf_header = load_hudf_data(extent)
+    hudf_data, hudf_header = load_hudf_data()
 
     wcs = WCS(hudf_header[0])
 
+    print('Configuring colors...')
     r = hudf_data[0] * 0.5
     g = hudf_data[1] * 0.3
     b = hudf_data[2] * 0.8
@@ -122,7 +119,7 @@ if __name__=='__main__':
     r[r > t] = t
     g[g > t] = t
     b[b > t] = t
-
+    print('Done configuring.')
 
     hudf_rgb = make_lupton_rgb(r, g, b, Q=0.0001, stretch=0.001, filename='hudf.jpeg')
     
@@ -139,14 +136,16 @@ if __name__=='__main__':
     crossmatchz = {}
     for key, vals in photz_raf.items():
         crossmatchz[key] = vals[idx]
-    print(crossmatchz)
     
     pixels_photz = wcs.world_to_pixel(photz_raf['sky'])
     pixels_specz = wcs.world_to_pixel(specz_muse['sky'])
     pixels_bothz = wcs.world_to_pixel(crossmatchz['sky'])
 
-    # fig = plt.figure(figsize=(12,12))
-    # axes = fig.add_subplot(111, projection=wcs)
-    # axes.imshow(hudf_rgb, origin='lower')
-    # #axes.scatter(ra, dec)
-    # plt.show()
+    fig = plt.figure(figsize=(12,12))
+    axes = fig.add_subplot(111, projection=wcs)
+    axes.imshow(hudf_rgb, origin='lower')
+    axes.scatter(pixels_photz[0], pixels_photz[1], s=3, c='y')
+    axes.scatter(pixels_specz[0], pixels_specz[1], s=3, c='m')
+    axes.scatter(pixels_bothz[0], pixels_bothz[1], s=3, c='c')
+
+    plt.show()
