@@ -14,7 +14,8 @@ from astroquery.vizier import Vizier
 import os
 Vizier.ROW_LIMIT = 10000
 import logging
-logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.INFO)
+logging.basicConfig(format='%(asctime)s | %(levelname)s: %(message)s', level=logging.INFO,
+                    handlers=[logging.FileHandler('debug.log'), logging.StreamHandler()])
 
 class HUDF_Plotter():
     """
@@ -67,9 +68,13 @@ class HUDF_Plotter():
         redshift catalogs and redshift distribution.
     plot_z_hist(self, plot_catalogs=True, bins=None, ax=None)
         Plot redshift distributions of catalogs in `z_catalogs` as histogram.
+    plot_z_cross_match(self, catalog_key, ax=None)
+        Plot photometric and spectroscopic redshifts of cross-matched catalog. 
     add_inset(self, coords, sizes)
         Add inset views of square subregions centered at given coordinates to `inset_coords`.
         If coords is outside image, ignore coords.
+    remove_inset(self, index)
+        Remove inset view by index.
     plot_multipanel(self, plot_catalogs=True, bins=None, figsize=(20,10))
         Plot multi-panel configuration, including HUDF image and overlaid redshift objects, redshift distribution,
         and inset views of subregions.
@@ -90,6 +95,7 @@ class HUDF_Plotter():
         debug : bool 
             If True, load part of HUDF data array to speed up.
         """
+        ### Check inputs
         if not isinstance(data_path, str):
             raise TypeError('`data_path` must be a string to the directory including the fits files.')
         if not isinstance(rgb_scale, tuple) or len(rgb_scale) != 3:
@@ -104,7 +110,7 @@ class HUDF_Plotter():
         except FileNotFoundError: 
             raise FileNotFoundError(f'Cannot find HUDF fits files in `{self.data_path}/`. Fits files should be named `h_udf_wfc_[c]_drz_img.fits` where [c] is i,v,b.')
         self.wcs = WCS(self.header[0])
-        logging.info('Converting to RGB image...')
+        logging.debug('Converting to RGB image...')
         self.rgb = make_lupton_rgb(self.data[0], self.data[1], self.data[2], Q=0.0001, stretch=0.001)
         self.z_catalogs = {}
         self.z_colors = {}
@@ -128,6 +134,7 @@ class HUDF_Plotter():
         hudf_header : list
             List of length 3 containing the header of each fits file.
         """
+        ### Debug mode doesn't load whole fits file to go faster
         if debug:
             extent = [5000, 5500, 5000, 5500]
         else: extent = None
@@ -170,6 +177,7 @@ class HUDF_Plotter():
         catalog : `HUDF_z_Catalog`
             `HUDF_z_Catalog` object with associated catalog.
         """
+        logging.info(f'Adding catalog {catalog_id}.')
         catalog = HUDF_z_Catalog(catalog_id, zcol, mag_constraint, limit_filter)
         if catalog_key is None:
             catalog_key = catalog_id
@@ -192,6 +200,7 @@ class HUDF_Plotter():
             The removed `HUDF_z_Catalog` object. If `catalog_key` not found, return None.
         """
         if catalog_key in self.z_catalogs.keys():
+            logging.info(f'Removing catalog with key {catalog_key}.')
             removed_cat = self.z_catalogs.pop(catalog_key)
             self.z_colors.pop(catalog_key)
             return removed_cat
@@ -199,7 +208,7 @@ class HUDF_Plotter():
             logging.warning(f'Key {catalog_key} not found in `z_catalogs`.')
             return None
         
-    def cross_match_catalogs(self, catalog_key1, catalog_key2, new_key=None, new_color=None):
+    def cross_match_catalogs(self, catalog_key1, catalog_key2, new_key=None, new_color=None): 
         """
         Cross-match redshift catalogs.
 
@@ -207,8 +216,10 @@ class HUDF_Plotter():
         ------------
         catalog_key1 : str
             The key in `z_catalogs` associated with the first catalog to be cross-matched.
+            For purpose of plotting phot vs spec redshifts, first key should be photo-z catalog.
         catalog_key2 : str
             The key in `z_catalogs` associated with the second catalog to be cross-matched.
+            For purpose of plotting phot vs spec redshifts, second key should be spec-z catalog.
         new_key : str
             The new key in `z_catalogs` for the cross-matched catalog object.
         new_color : str
@@ -226,17 +237,20 @@ class HUDF_Plotter():
         try:
             cat1 = self.z_catalogs[catalog_key1]
             cat2 = self.z_catalogs[catalog_key2]
-        except: raise KeyError('`catalog_key1` and `catalog_key2` must be keys in `z_catalogs`')
+        except: raise KeyError('`catalog_key1` and `catalog_key2` must be keys in `z_catalogs`.')
 
+        logging.info(f'Cross-matching {catalog_key1} and {catalog_key2}.')
+        ### Get indices of cat2 matched with each in cat1
         idx, sep2d, dist3d = cat1.coords.match_to_catalog_sky(cat2.coords)
-        idx = list(set(idx)) # Remove duplicate indices
+        # Make new catalog object
         new_catalog = HUDF_z_Catalog(cat2.catalog_id, cat2.zcol, cat2.mag_constraint, cat2.limit_filter)
         new_catalog.catalog = cat2.catalog[idx]
         new_catalog.zs = cat2.zs[idx]
+        new_catalog.zs_spec = cat1.zs
         new_catalog.coords = cat2.coords[idx]
         if new_key is None:
             new_key = catalog_key1 + '_' + catalog_key2
-            logging.info(f'Key for cross-matched catalog not specified. Defaulting to {new_key}')
+            logging.warning(f'Key for cross-matched catalog not specified. Defaulting to {new_key}')
         self.z_catalogs[new_key] = new_catalog
         self.z_colors[new_key] = new_color
         return new_catalog, new_key
@@ -301,18 +315,20 @@ class HUDF_Plotter():
         ### Get catalogs to plot
         plot_dict = self.get_plot_catalogs(plot_catalogs)
         
+        logging.debug('Plotting HUDF image...')
         ### Plot
         fig = None
         if ax is None:
             fig = plt.figure()
-            ax = fig.add_subplot(111, projection=self.wcs[extent[0]:extent[1], extent[2]:extent[3]])
-        im = ax.imshow(self.rgb[extent[0]:extent[1], extent[2]:extent[3]], origin='lower')
+            ax = fig.add_subplot(111, projection=self.wcs[extent[2]:extent[3], extent[0]:extent[1]])
+            ax.set_title('Hubble Ultra Deep Field Image')
+        im = ax.imshow(self.rgb[extent[2]:extent[3], extent[0]:extent[1]], origin='lower')
         for key, cat in plot_dict.items():
             coords = cat.coords
             pixel_coords = self.wcs.world_to_pixel(coords)
             ax.scatter(pixel_coords[0], pixel_coords[1], s=1, c=self.z_colors[key], label=key)
         if len(plot_dict) != 0:
-            ax.legend()
+            ax.legend(labelcolor='white', facecolor='black')
         ax.set_xlabel('RA (deg)')
         ax.set_ylabel('DEC (deg)')
         return fig, ax
@@ -348,16 +364,54 @@ class HUDF_Plotter():
         if bins is None:
             bins = np.arange(0, 7, 0.1)
 
+        logging.debug('Plotting redshift distribution histogram...')
         ### Plot
         fig = None
         if ax is None:
             fig, ax = plt.subplots()
+            ax.set_title('Redshift Distribution')
         for key, cat in plot_dict.items():
             zs = cat.zs
             ax.hist(zs, color=self.z_colors[key], label=key, alpha=0.5, bins=bins)
         ax.legend()
         ax.set_xlabel('Redshift z')
         ax.set_ylabel('Count')
+        return fig, ax
+    
+    def plot_z_cross_match(self, catalog_key, ax=None):
+        """
+        Plot photometric and spectroscopic redshifts of cross-matched catalog. 
+
+        Parameters
+        ----------
+        catalog_key : str
+            Key in `z_catalogs` of a cross-matched redshift catalog. Cross-matched catalog objects will
+            have two redshift attributes (`zs` and `zs_spec`).
+        
+        Returns
+        fig : plt.Figure
+            The new Figure that includes `ax`. If no new Figure created, return None.
+        ax : plt.Axes
+            The Axes on which the histogram is plotted. 
+        """
+        ### Check key exists and is cross-matched catalog
+        try: cross_cat = self.z_catalogs[catalog_key]
+        except: raise KeyError('`catalog_key` must be a key in `z_catalogs`.')
+        try: 
+            zs_phot = cross_cat.zs
+            zs_spec = cross_cat.zs_spec
+        except: raise ValueError('`catalog_key` must be associated with a cross-matched catalog.')
+
+        ### Plot
+        logging.debug('Plotting phot vs spec redshifts...')
+        fig = None
+        if ax is None:
+            fig, ax = plt.subplots()
+            ax.set_title('Photometric vs Spectrosopic Redshifts')
+        ax.scatter(zs_phot, zs_spec, s=3, c=self.z_colors[catalog_key])
+        ax.set_xlabel('Photometric Redshift')
+        ax.set_ylabel('Spectroscopic Redshift')
+
         return fig, ax
 
     def add_inset(self, coords, sizes):
@@ -382,25 +436,56 @@ class HUDF_Plotter():
         """
         ### Convert coords to SkyCoord
         if not isinstance(coords, SkyCoord):
-            try: 
-                coords = self.wcs.pixel_to_world(coords[0], coords[1])
+            try: coords = self.wcs.pixel_to_world(coords[0], coords[1])
             except: raise TypeError('`coords` must be a SkyCoord or array with shape (2,N) of pixel coords.')
         try:
             if coords.size != len(sizes):
                 raise ValueError('`sizes` must have same length as `coords`.')
         except: raise TypeError('`sizes` must be a list of same length as each array in `coords`')
+        try: sizes = np.array(sizes)
+        except: raise TypeError('`sizes` must be a list of same length as each array in `coords`')
 
-        contained = coords.contained_by(self.wcs)
-        coords = coords[contained]
+        # Check if coords are within plot
+        valid_inds = np.array(coords.contained_by(self.wcs))
+        coords = coords[valid_inds]
+        if coords.size < 1:
+            logging.warning('All coords are outside image.')
+            return None, None
+        # Get pixel coordinates
         pixels = coords.to_pixel(self.wcs)
         pixels = np.array(pixels)
         self.inset_pixels = np.append(self.inset_pixels, pixels, axis=1)
-        self.inset_coords = self.wcs.pixel_to_world(self.inset_pixels[0], self.inset_pixels[1])
-
+        coords = self.wcs.pixel_to_world(self.inset_pixels[0], self.inset_pixels[1])
+        self.inset_coords = coords
         ### Convert sizes to units
-        self.inset_sizes = np.append(self.inset_sizes, sizes[contained])
+        sizes = np.append(self.inset_sizes, sizes[valid_inds])
+        self.inset_sizes = sizes
+        for i in range(pixels[0].size):
+            logging.debug(f"""Adding insets at (RA DEC)=({coords[i].to_string("hmsdms")}), 
+                        (x, y)=({pixels[:,i]}) with size {sizes[i]}""")
+
         return coords, pixels
     
+    def remove_inset(self, index):
+        """
+        Remove inset view by index.
+
+        Parameters
+        ----------
+        index : int
+            Index of inset view to remove. If `index` is not valid, return None.
+
+        Returns
+        -------
+        pixels : ndarray
+            Array of pixel coordinates removed.
+        """
+        pixels = self.inset_pixels[:,index]
+        hudfp.inset_pixels = np.delete(hudfp.inset_pixels, index, 1)
+        hudfp.inset_sizes = np.delete(hudfp.inset_sizes, index)
+        self.inset_coords = self.wcs.pixel_to_world(self.inset_pixels[0], self.inset_pixels[1])
+        return pixels
+        
     def plot_multipanel(self, plot_catalogs=True, bins=None, figsize=(20,10)):
         """
         Plot multi-panel configuration, including HUDF image and overlaid redshift objects, redshift distribution,
@@ -416,6 +501,7 @@ class HUDF_Plotter():
         figsize : tuple(float, float)
             Same `figsize` parameter as in `plt.figure` to specify figure size.
         """
+        logging.debug('Plotting multipanel plot...')
         ### Get catalogs to plot
         plot_dict = self.get_plot_catalogs(plot_catalogs)
         n = len(self.inset_sizes) # Number of insets
@@ -435,11 +521,18 @@ class HUDF_Plotter():
         imax = fig.add_subplot(gs[1:n,0:n], projection=self.wcs)
         _, imax = self.plot(plot_catalogs=plot_catalogs, ax=imax)
         imax.set_xlim(0, self.rgb.shape[0])
-        # Redshift distribution above HUDF image on left side
+        # Redshift distribution and photz vs specz plot above HUDF image
         histax = None
+        distax = None
         if len(plot_dict) != 0:
-            histax = fig.add_subplot(gs[0,0:n])
+            histax = fig.add_subplot(gs[0,0:n-1])
             _, histax = self.plot_z_hist(plot_catalogs=plot_catalogs, ax=histax)
+            distax = fig.add_subplot(gs[0,n-1])
+            for key, cat in self.z_catalogs.items():
+                if cat.zs_spec is not None:
+                    continue
+            _, distax = self.plot_z_cross_match(catalog_key=key, ax=distax)
+        
 
         # Plot insets
         insetax = np.zeros((n,n), dtype=object)
@@ -459,18 +552,15 @@ class HUDF_Plotter():
             extent = [int(box_pixels[0]), int(box_pixels[0]+size), int(box_pixels[1]), int(box_pixels[1]+size)]
             plot_ind = np.unravel_index(i, (n,n))
             ax = fig.add_subplot(gs[plot_ind[0],plot_ind[1]+n], 
-                                 projection=self.wcs[extent[0]:extent[1],extent[2]:extent[3]])
+                                 projection=self.wcs[extent[2]:extent[3],extent[0]:extent[1]])
             _, ax = self.plot(extent=extent, plot_catalogs=False, ax=ax)
             ax.tick_params(axis='x', bottom=False, labelbottom=False)
             ax.tick_params(axis='y', left=False, labelleft=False)
             ax.text(0.05, 0.95, f'({letter})', ha='left', va='top',
                     color='r', bbox=dict(facecolor='white', alpha=0.8), transform=ax.transAxes)
-            
             insetax[plot_ind] = ax
         
-        return fig, imax, histax, insetax
-
-
+        return fig, imax, histax, distax, insetax
 
 class HUDF_z_Catalog():
     """
@@ -508,6 +598,7 @@ class HUDF_z_Catalog():
         self.mag_constraint = mag_constraint
         self.limit_filter = limit_filter
         self.catalog, self.zs, self.coords = self.load_hudf_z_vizier()
+        self.zs_spec = None
 
     def load_hudf_z_vizier(self):
         """ Load catalog and constrains rows with `mag_constraint` and `limit_filter`. """
@@ -525,6 +616,7 @@ class HUDF_z_Catalog():
         else:
             try:
                 catalog = catalog[np.where(catalog[self.limit_filter] < self.mag_constraint)]
+                catalog.sort(self.limit_filter)
             except: raise KeyError(f'Filter {self.limit_filter} is not a column in catalog')
 
         # Get redshifts from catalog
@@ -538,6 +630,41 @@ class HUDF_z_Catalog():
         except: raise KeyError('Catalog does not have RA/DEC columns named `RAJ2000` / `DEJ2000`')
 
         return catalog, redshifts, coords
-
+    
 if __name__=='__main__':
     print('Testing')
+    hudfp = HUDF_Plotter(debug=False)
+
+    print('Plotting main image')
+    fig, ax = hudfp.plot()
+    fig.savefig('plots/hudf_image_plain.png')
+    plt.show()
+
+    print('Adding redshift Catalogs')
+    catalog_keys = ['photz_raf', 'specz_muse']
+    catalogs = ['J/AJ/150/31/table5', 'J/A+A/608/A2/combined']
+    zcols = ['zph1', 'zMuse']
+    zcolors = ['y', 'm']
+
+    for i, cat in enumerate(catalogs):
+        hudfp.add_z_catalog(catalog_id=cat, zcol=zcols[i], mag_constraint=25, 
+                            catalog_key=catalog_keys[i], color=zcolors[i])
+    hudfp.cross_match_catalogs(catalog_keys[0], catalog_keys[1], 'cross-match', 'c')
+
+    fig, ax = hudfp.plot()
+    fig.savefig('plots/hudf_image_zs.png')
+    fig, ax = hudfp.plot_z_hist()
+    fig.savefig('plots/zhist.png')
+    fig, ax = hudfp.plot_z_cross_match('cross-match')
+    fig.savefig('plots/zcross.png')
+    plt.show()
+
+    print('Adding insets of brightest objects')
+    coords = hudfp.z_catalogs['photz_raf'].coords[:10]
+    sizes = np.array([1000]*10)
+    hudfp.add_inset(coords, sizes)
+    hudfp.add_inset([5250, 5250], sizes=[3500])
+
+    fig, imax, histax, distax, insetax = hudfp.plot_multipanel()
+    fig.savefig('plots/hudf_multipanel.png')
+    plt.show()
